@@ -1,0 +1,34 @@
+import json
+
+def generate_report(subscribers):
+
+    report = {}
+
+    for msisdn, subscriber in subscribers.items():
+
+        report[msisdn] = {
+            "plan_type": subscriber.plan_type,
+            "total_calls": subscriber.total_calls(),
+            "total_cost": subscriber.total_cost()
+        }
+
+    return report
+
+
+def save_report(report, filename):
+
+    with open(filename, "w") as file:
+        json.dump(report, file, indent=4)
+
+
+def print_summary(report):
+
+    print("\n========== TELECOM BILLING SUMMARY ==========\n")
+
+    for msisdn, details in report.items():
+
+        print(f"MSISDN      : {msisdn}")
+        print(f"Plan Type   : {details['plan_type']}")
+        print(f"Total Calls : {details['total_calls']}")
+        print(f"Total Cost  : ₹{details['total_cost']}")
+        print("-------------------------------------------")
