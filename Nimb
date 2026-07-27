@@ -1,0 +1,358 @@
+#config.py
+PRIORITY_SCORE = {
+    "Low": 1,
+    "Medium": 2,
+    "High": 3,
+    "Critical": 4
+}
+
+#models.py
+from pydantic import BaseModel
+
+class Ticket(BaseModel):
+    ticketId: str
+    customerName: str
+    category: str
+    priority: str
+    createdAt: str
+    slaHours: int
+    status: str
+
+#processor.py
+import csv
+import json
+import logging
+from datetime import datetime
+from config import PRIORITY_SCORE
+
+logging.basicConfig(
+    filename="ticket.log",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+
+
+def validate_ticket(row):
+    required = [
+        "ticketId",
+        "customerName",
+        "category",
+        "priority",
+        "createdAt",
+        "slaHours",
+        "status"
+    ]
+
+    for field in required:
+        if field not in row or row[field].strip() == "":
+            return False
+
+    if row["priority"] not in PRIORITY_SCORE:
+        return False
+
+    try:
+        int(row["slaHours"])
+    except ValueError:
+        return False
+
+    try:
+        datetime.strptime(
+            row["createdAt"],
+            "%Y-%m-%d %H:%M:%S"
+        )
+    except ValueError:
+        return False
+
+    return True
+
+
+def calculate_sla(ticket):
+    created = datetime.strptime(
+        ticket["createdAt"],
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    now = datetime.now()
+
+    hours = (now - created).total_seconds() / 3600
+
+    return hours > int(ticket["slaHours"])
+def process_csv(input_file, output_file):
+
+    valid = []
+    invalid = []
+    total = 0
+
+    with open(input_file, "r", newline="", encoding="utf-8") as file:
+
+        reader = csv.DictReader(file)
+
+        for row in reader:
+
+            total += 1
+
+            if validate_ticket(row):
+
+                row["priorityScore"] = PRIORITY_SCORE[row["priority"]]
+
+                row["slaBreached"] = calculate_sla(row)
+
+                valid.append(row)
+
+            else:
+
+                invalid.append(row)
+
+    if total > 0:
+
+        invalid_percentage = len(invalid) / total
+
+        if invalid_percentage > 0.10:
+
+            logging.error("Invalid rows exceeded 10%")
+
+            raise Exception("More than 10% invalid rows found.")
+
+    report = {
+
+        "generatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+
+        "totalRecords": total,
+
+        "validRecords": len(valid),
+
+        "invalidRecords": len(invalid),
+
+        "tickets": valid
+
+    }
+
+    with open(output_file, "w", encoding="utf-8") as file:
+
+        json.dump(report, file, indent=4)
+
+    logging.info("JSON report generated successfully.")
+
+    return report
+def load_json(filename):
+    """
+    Load tickets from JSON file.
+    """
+    with open(filename, "r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    logging.info("JSON file loaded successfully.")
+
+    return data.get("tickets", [])
+
+
+def save_json(filename, tickets):
+    """
+    Save tickets to JSON file.
+    """
+    report = {
+        "generatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "totalRecords": len(tickets),
+        "validRecords": len(tickets),
+        "invalidRecords": 0,
+        "tickets": tickets
+    }
+
+    with open(filename, "w", encoding="utf-8") as file:
+        json.dump(report, file, indent=4)
+
+    logging.info("JSON saved successfully.")
+#main.py
+import argparse
+import logging
+from fastapi import FastAPI, HTTPException
+from models import Ticket
+from processor import process_csv, load_json, calculate_sla
+from config import PRIORITY_SCORE
+
+logging.basicConfig(
+    filename="ticket.log",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+
+app = FastAPI(
+    title="NimbusTech Ticket API",
+    version="1.0"
+)
+
+tickets = []
+
+
+@app.get("/")
+def home():
+    return {
+        "message": "NimbusTech Ticket API Running Successfully"
+    }
+
+
+@app.get("/tickets")
+def get_all_tickets():
+    return {
+        "count": len(tickets),
+        "tickets": tickets
+    }
+
+
+@app.get("/tickets/{ticket_id}")
+def get_ticket(ticket_id: str):
+
+    for ticket in tickets:
+
+        if ticket["ticketId"] == ticket_id:
+            return ticket
+
+    raise HTTPException(
+        status_code=404,
+        detail="Ticket Not Found"
+    )
+@app.get("/tickets/breached")
+def get_breached_tickets():
+
+    breached = []
+
+    for ticket in tickets:
+
+        if ticket.get("slaBreached"):
+
+            breached.append(ticket)
+
+    return {
+        "count": len(breached),
+        "tickets": breached
+    }
+
+
+@app.post("/tickets")
+def create_ticket(ticket: Ticket):
+
+    for t in tickets:
+
+        if t["ticketId"] == ticket.ticketId:
+
+            raise HTTPException(
+                status_code=400,
+                detail="Ticket ID already exists"
+            )
+
+    data = ticket.dict()
+
+    data["priorityScore"] = PRIORITY_SCORE[data["priority"]]
+
+    data["slaBreached"] = calculate_sla(data)
+
+    tickets.append(data)
+
+    logging.info(f"Ticket {ticket.ticketId} created.")
+
+    return {
+        "message": "Ticket created successfully",
+        "ticket": data
+    }
+
+
+@app.put("/tickets/{ticket_id}")
+def update_ticket(ticket_id: str, ticket: Ticket):
+
+    for index in range(len(tickets)):
+
+        if tickets[index]["ticketId"] == ticket_id:
+
+            data = ticket.dict()
+
+            data["priorityScore"] = PRIORITY_SCORE[data["priority"]]
+
+            data["slaBreached"] = calculate_sla(data)
+
+            tickets[index] = data
+
+            logging.info(f"Ticket {ticket_id} updated.")
+
+            return {
+                "message": "Ticket updated successfully",
+                "ticket": data
+            }
+
+    raise HTTPException(
+        status_code=404,
+        detail="Ticket not found"
+    )
+
+
+@app.delete("/tickets/{ticket_id}")
+def delete_ticket(ticket_id: str):
+
+    for ticket in tickets:
+
+        if ticket["ticketId"] == ticket_id:
+
+            tickets.remove(ticket)
+
+            logging.info(f"Ticket {ticket_id} deleted.")
+
+            return {
+                "message": "Ticket deleted successfully"
+            }
+
+    raise HTTPException(
+        status_code=404,
+        detail="Ticket not found"
+    )
+def main():
+
+    parser = argparse.ArgumentParser(
+        description="NimbusTech Ticket Processing"
+    )
+
+    parser.add_argument(
+        "--input",
+        required=True,
+        help="Input CSV file"
+    )
+
+    parser.add_argument(
+        "--output",
+        required=True,
+        help="Output JSON file"
+    )
+
+    args = parser.parse_args()
+
+    try:
+
+        process_csv(
+            args.input,
+            args.output
+        )
+
+        global tickets
+
+        tickets = load_json(
+            args.output
+        )
+
+        logging.info(
+            "Ticket processing completed successfully."
+        )
+
+        print("----------------------------------")
+        print("Ticket Processing Completed")
+        print("----------------------------------")
+        print("Total Tickets :", len(tickets))
+        print("Output File :", args.output)
+        print("----------------------------------")
+
+    except Exception as e:
+
+        logging.error(str(e))
+
+        print("Error :", e)
+
+
+if __name__ == "__main__":
+    main()
